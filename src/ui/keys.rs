@@ -10,6 +10,7 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     let chat_open = app.page == Page::Chats && app.open_chat.is_some();
     let can_compose = chat_open && app.recording.is_none();
     let mut insert_question = false;
+    let mut question_already_typed = false;
     let mut open_emoji = false;
     let mut edit_last = false;
 
@@ -18,6 +19,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         // modifier matching permits extra Alt/Shift modifiers for shortcuts.
         if can_compose && input.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::W) {
             insert_question = true;
+            question_already_typed = input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Text(text) if text == "?"));
         }
         if can_compose && input.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::E) {
             open_emoji = true;
@@ -54,7 +59,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
     if insert_question {
         let composer = egui::Id::new("composer-text");
         ctx.memory_mut(|memory| memory.request_focus(composer));
-        ctx.input_mut(|input| input.events.push(egui::Event::Text("?".to_owned())));
+        if !question_already_typed {
+            ctx.input_mut(|input| input.events.push(egui::Event::Text("?".to_owned())));
+        }
     }
     if open_emoji && app.picker != Some(PickerTab::Emoji) {
         actions.push(Action::TogglePicker(PickerTab::Emoji));
