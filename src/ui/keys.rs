@@ -3,11 +3,29 @@
 use egui::{Key, Modifiers};
 
 use crate::app::App;
-use crate::model::{Action, Dialog, Page};
+use crate::model::{Action, Dialog, Page, PickerTab};
 
 pub fn handle(app: &mut App, ctx: &egui::Context) {
     let mut actions = Vec::new();
+    let chat_open = app.page == Page::Chats && app.open_chat.is_some();
+    let can_compose = chat_open && app.recording.is_none();
+    let mut insert_question = false;
+    let mut open_emoji = false;
+    let mut edit_last = false;
+
     ctx.input_mut(|input| {
+        // Handle the more specific W shortcut before Ctrl+W. egui's
+        // modifier matching permits extra Alt/Shift modifiers for shortcuts.
+        if can_compose && input.consume_key(Modifiers::COMMAND | Modifiers::ALT, Key::W) {
+            insert_question = true;
+        }
+        if can_compose && input.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::E) {
+            open_emoji = true;
+        }
+        if chat_open && input.consume_key(Modifiers::COMMAND, Key::ArrowUp) {
+            edit_last = true;
+        }
+
         let mut key = |modifiers: Modifiers, key: Key, action: Action| {
             if input.consume_key(modifiers, key) {
                 actions.push(action);
@@ -18,7 +36,9 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         key(Modifiers::COMMAND, Key::B, Action::ToggleSidebar);
         key(Modifiers::COMMAND, Key::Comma, Action::Open(Page::Settings));
         key(Modifiers::COMMAND, Key::Q, Action::Quit);
-        key(Modifiers::COMMAND, Key::W, Action::CloseWindow);
+        if chat_open {
+            key(Modifiers::COMMAND, Key::W, Action::CloseChat);
+        }
         key(
             Modifiers::COMMAND,
             Key::Slash,
@@ -30,7 +50,35 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
         key(Modifiers::COMMAND, Key::Num0, Action::ResetZoom);
         key(Modifiers::COMMAND, Key::End, Action::ScrollToBottom);
     });
+
+    if insert_question {
+        let composer = egui::Id::new("composer-text");
+        ctx.memory_mut(|memory| memory.request_focus(composer));
+        ctx.input_mut(|input| input.events.push(egui::Event::Text("?".to_owned())));
+    }
+    if open_emoji && app.picker != Some(PickerTab::Emoji) {
+        actions.push(Action::TogglePicker(PickerTab::Emoji));
+    }
+    if edit_last {
+        let message = app
+            .open_chat
+            .as_deref()
+            .and_then(|chat| app.conversations.get(chat))
+            .and_then(|conversation| {
+                conversation
+                    .messages
+                    .iter()
+                    .rev()
+                    .find(|message| app.can_edit(message))
+            })
+            .map(|message| message.id.clone());
+        if let Some(message) = message {
+            actions.push(Action::Edit(message));
+        }
+    }
+
     // Escape cancels the topmost state. Menus handle Escape themselves.
+    // With no transient state left, Escape closes the current chat.
     let menu_open = egui::Popup::is_any_open(ctx);
     let search_focused = ctx.memory(|memory| memory.has_focus(egui::Id::new("chat-search")));
     let escape =
@@ -61,6 +109,8 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             if app.open_chat.is_some() {
                 actions.push(Action::FocusComposer);
             }
+        } else if app.open_chat.is_some() {
+            actions.push(Action::CloseChat);
         }
     }
     // Enter sends a recording because the text field is hidden.
@@ -102,11 +152,15 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
 pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+F / Ctrl+K", "Search chats"),
     ("Alt+↑ / Alt+↓", "Previous / next chat"),
+    ("Ctrl+Alt+W", "Insert ? in the composer"),
+    ("Ctrl+Shift+E", "Open the emoji picker"),
+    ("Ctrl+↑", "Edit the latest editable message you sent"),
     ("Enter", "Send (Shift+Enter for a new line)"),
     (
         "Escape",
-        "Dismiss suggestions, cancel the current action, or return from search",
+        "Dismiss the current action, or close the current chat",
     ),
+    ("Ctrl+W", "Close the current chat"),
     ("Ctrl+V", "Paste text, or send a picture from the clipboard"),
     ("Ctrl+B", "Show or hide the chat list"),
     ("Ctrl+End", "Jump to the newest message"),
@@ -114,7 +168,6 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl++ / Ctrl+-", "Zoom in / out"),
     ("Ctrl+0", "Reset zoom"),
     ("Ctrl+/", "This list"),
-    ("Ctrl+W", "Close the window (ZapFast remains in the tray)"),
     ("Ctrl+Q", "Quit"),
 ];
 
