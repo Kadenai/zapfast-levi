@@ -1,0 +1,71 @@
+name: Windows PR Build
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-x64:
+    name: Windows x64 installer
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - run: rustup target add x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-pr-x86_64
+
+      - name: Build release binary
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\portable | Out-Null
+          Copy-Item target\x86_64-pc-windows-msvc\release\zapfast.exe dist\portable\zapfast.exe
+          Copy-Item README.md dist\portable\README.md
+          Copy-Item LICENSE dist\portable\LICENSE
+          Compress-Archive -Path dist\portable\* -DestinationPath dist\zapfast-windows-x64-portable.zip -Force
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object { $_.name -eq "zapfast" } | Select-Object -First 1).version
+          if (-not $version) { throw "Could not determine ZapFast version" }
+
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+
+          & $iscc "/DVersion=$version" "/DArch=x86_64" `
+            "/DBinary=$PWD\target\x86_64-pc-windows-msvc\release\zapfast.exe" `
+            "/DOutputDir=$PWD\dist" packaging\windows\zapfast.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $setup = Get-ChildItem dist\*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw "Installer was not generated" }
+          Move-Item $setup.FullName dist\zapfast-windows-x64-setup.exe -Force
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v7
+        with:
+          name: zapfast-windows-x64-pr-${{ github.event.pull_request.number || github.run_number }}
+          path: |
+            dist/zapfast-windows-x64-portable.zip
+            dist/zapfast-windows-x64-setup.exe
+          if-no-files-found: error
+          retention-days: 14
